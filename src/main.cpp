@@ -1,29 +1,4 @@
 /*
-Es06a: shadow rendering with shadow mapping technique - PART 2
-- swapping (pressing keys from 1 to 3) between basic shadow mapping (with a lot of aliasing/shadow "acne"), adaptive bias to avoid shadow "acne", and PCF to smooth shadow borders
-- conclusion of Es05c, with object shaders now using the shadow map computed in the first rendering step
-
-N.B. 1)
-In this example we use Shaders Subroutines to do shader swapping:
-http://www.geeks3d.com/20140701/opengl-4-shader-subroutines-introduction-3d-programming-tutorial/
-https://www.lighthouse3d.com/tutorials/glsl-tutorial/subroutines/
-https://www.khronos.org/opengl/wiki/Shader_Subroutine
-
-In other cases, an alternative could be to consider Separate Shader Objects:
-https://www.informit.com/articles/article.aspx?p=2731929&seqNum=7
-https://www.khronos.org/opengl/wiki/Shader_Compilation#Separate_programs
-https://riptutorial.com/opengl/example/26979/load-separable-shader-in-cplusplus
-
-N.B. 2) the application considers only a directional light. In case of more lights, and/or of different nature, the code must be modifies
-
-N.B. 3)
-see :
-https://learnopengl.com/Advanced-Lighting/Shadows/Shadow-Mapping
-http://www.opengl-tutorial.org/intermediate-tutorials/tutorial-16-shadow-mapping/#basic-shadowmap
-https://docs.microsoft.com/en-us/windows/desktop/dxtecharts/common-techniques-to-improve-shadow-depth-maps
-for further details
-
-
 author: Davide Gadia
 
 Real-Time Graphics Programming - a.a. 2021/2022
@@ -47,8 +22,6 @@ positive Z axis points "outside" the screen
                            /
                           Z
 */
-// Std. Includes
-#include <string>
 
 // Loader for OpenGL extensions
 // http://glad.dav1d.de/
@@ -56,8 +29,12 @@ positive Z axis points "outside" the screen
 // GLAD will include windows.h for APIENTRY if it was not previously defined.
 // Make sure you have the correct definition for APIENTRY for platforms which define _WIN32 but don't use __stdcall
 #ifdef _WIN32
-    #define APIENTRY __stdcall
+#define APIENTRY __stdcall
 #endif
+
+#include <../imgui/imgui.h>
+#include <../imgui/imgui_impl_glfw.h>
+#include <../imgui/imgui_impl_opengl3.h>
 
 #include <glad/glad.h>
 
@@ -67,13 +44,11 @@ positive Z axis points "outside" the screen
 // another check related to OpenGL loader
 // confirm that GLAD didn't include windows.h
 #ifdef _WINDOWS_
-    #error windows.h was included!
+#error windows.h was included!
 #endif
 
 // classes developed during lab lectures to manage shaders, to load models, and for FPS camera
-#include <utils/shader.h>
-#include <utils/model.h>
-#include <utils/camera.h>
+#include <utils/utils.h>
 
 // we load the GLM classes used in the application
 #include <glm/glm.hpp>
@@ -85,43 +60,45 @@ positive Z axis points "outside" the screen
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image/stb_image.h>
 
+// Std. Includes
+#include <string>
+#include <vector>
+#include <array>
+using std::string;
+using std::vector;
+using std::array;
 
 #define SHADERS_DIR_PATH "shaders"
 #define TEXTURES_DIR_PATH "../textures"
 #define MODELS_DIR_PATH "../models"
 
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode);
+void mouse_callback(GLFWwindow *window, double xpos, double ypos);
+void apply_camera_movements();
+void SetupShader(int shader_program);
+void PrintCurrentShader(int subroutine);
+void RenderObjects(Shader &shader);
+void PerformShadowMapping(Shader &shadowShader, GLuint depthMapFBO);
+void PerformIlluminationPass(Shader &shader, glm::vec3 &absorptionCoeff, glm::vec3 &scatteringCoeff, float gCoeff);
+void PerformSkyboxPass(Shader &shader, Model &skyboxCube, glm::vec3 &absorptionCoeff, glm::vec3 &scatteringCoeff, float gCoeff);
+void RenderAxis(Shader& shader, ArrowLine& xAxis, ArrowLine& yAxis, ArrowLine& zAxis);
+ArrowLine CreateArrowLine(const vector<glm::vec3>& pointsPos, const glm::vec4& color);
+void CreateSceneObjects(Model& planeModel, Model& sphereModel, Model& cubeModel);
+void PerformSkyBoxPass(Shader& shader, Model &skyboxCube);
+
+
 
 // dimensions of application's window
 GLuint screenWidth = 1200, screenHeight = 900;
 
-// the rendering steps used in the application
-enum render_passes{ SHADOWMAP, RENDER};
-
-// callback functions for keyboard and mouse events
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode);
-void mouse_callback(GLFWwindow* window, double xpos, double ypos);
-// if one of the WASD keys is pressed, we call the corresponding method of the Camera class
-void apply_camera_movements();
-
 // index of the current shader subroutine (= 0 in the beginning)
 GLuint current_subroutine = 0;
 // a vector for all the shader subroutines names used and swapped in the application
-vector<std::string> shaders;
-
-// the name of the subroutines are searched in the shaders, and placed in the shaders vector (to allow shaders swapping)
-void SetupShader(int shader_program);
-
-// print on console the name of current shader subroutine
-void PrintCurrentShader(int subroutine);
-
-// in this application, we have isolated the models rendering using a function, which will be called in each rendering step
-void RenderObjects(Shader &shader, Model &planeModel, Model &cubeModel, Model &sphereModel, Model &bunnyModel, GLint render_pass, GLuint depthMap);
-
-// load image from disk and create an OpenGL texture
-GLint LoadTexture(const char* path);
-
+vector<string> shaders;
 // we initialize an array of booleans for each keyboard key
 bool keys[1024];
+
+bool menuIsActive = true;
 
 // we need to store the previous mouse position to calculate the offset with the current frame
 GLfloat lastX, lastY;
@@ -132,67 +109,58 @@ bool firstMouse = true;
 GLfloat deltaTime = 0.0f;
 GLfloat lastFrame = 0.0f;
 
-// rotation angle on Y axis
-GLfloat orientationY = 0.0f;
-// rotation speed on Y axis
-GLfloat spin_speed = 30.0f;
-// boolean to start/stop animated rotation on Y angle
-GLboolean spinning = GL_TRUE;
-
-// boolean to activate/deactivate wireframe rendering
-GLboolean wireframe = GL_FALSE;
-
+//CAMERA PARAMETERS
 // View matrix: the camera moves, so we just set to indentity now
 glm::mat4 view = glm::mat4(1.0f);
-
-// Model and Normal transformation matrices for the objects in the scene: we set to identity
-glm::mat4 sphereModelMatrix = glm::mat4(1.0f);
-glm::mat3 sphereNormalMatrix = glm::mat3(1.0f);
-glm::mat4 cubeModelMatrix = glm::mat4(1.0f);
-glm::mat3 cubeNormalMatrix = glm::mat3(1.0f);
-glm::mat4 bunnyModelMatrix = glm::mat4(1.0f);
-glm::mat3 bunnyNormalMatrix = glm::mat3(1.0f);
-glm::mat4 planeModelMatrix = glm::mat4(1.0f);
-glm::mat3 planeNormalMatrix = glm::mat3(1.0f);
-
+glm::mat4 projection = glm::mat4(1.0f);
 // we create a camera. We pass the initial position as a paramenter to the constructor. The last boolean tells if we want a camera "anchored" to the ground
-Camera camera(glm::vec3(0.0f, 0.0f, 7.0f), GL_TRUE);
+Camera camera(glm::vec3(0.0f, 0.0f, 7.0f), GL_FALSE);
+bool detachMouseFromCamera = false;
 
-// in this example, we consider a directional light. We pass the direction of incoming light as an uniform to the shaders
-glm::vec3 lightDir0 = glm::vec3(1.0f, 1.0f, 1.0f);
+// point light pos
+glm::vec3 lightPos = glm::vec3(0.0f, 30.0f, 15.0f);
 
 // weight for the diffusive component
 GLfloat Kd = 3.0f;
 // roughness index for GGX shader
-GLfloat alpha = 0.2f;
+GLfloat alpha = 0.4f;
 // Fresnel reflectance at 0 degree (Schlik's approximation)
 GLfloat F0 = 0.9f;
-
-// vector for the textures IDs
-vector<GLint> textureID;
 
 // UV repetitions
 GLfloat repeat = 1.0;
 
-/////////////////// MAIN function ///////////////////////
+std::vector<std::unique_ptr<Object>> objects;
+
+CubeMap *cubeMap = nullptr;
+Texture2D *debugTex;
+
+const unsigned int SHADOW_WIDTH = 2048, SHADOW_HEIGHT = 2048;
+constexpr float aspect = (float)SHADOW_WIDTH / (float)SHADOW_HEIGHT;
+const float near = 0.1f;
+const float far = 100.0f;
+const glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), aspect, near, far);
+
+int width, height;
+
+
+int skyboxTechnique = 0;
+int phaseFunction = 0;
+
+array<GLuint, 4> illuminationShaderSubroutines;
+array<GLuint, 4> skyboxShaderSubroutines;
+
 int main()
 {
-    // Initialization of OpenGL context using GLFW
+    // initw
     glfwInit();
-    // We set OpenGL specifications required for this application
-    // In this case: 4.1 Core
-    // If not supported by your graphics HW, the context will not be created and the application will close
-    // N.B.) creating GLAD code to load extensions, try to take into account the specifications and any extensions you want to use,
-    // in relation also to the values indicated in these GLFW commands
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    // we set if the window is resizable
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-    // we create the application's window
-    GLFWwindow* window = glfwCreateWindow(screenWidth, screenHeight, "main", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(screenWidth, screenHeight, "main", nullptr, nullptr);
     if (!window)
     {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -201,91 +169,175 @@ int main()
     }
     glfwMakeContextCurrent(window);
 
-    // we put in relation the window and the callbacks
     glfwSetKeyCallback(window, key_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
 
-    // we disable the mouse cursor
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    // GLAD tries to load the context set by GLFW
-    if (!gladLoadGLLoader((GLADloadproc) glfwGetProcAddress))
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
         std::cout << "Failed to initialize OpenGL context" << std::endl;
         return -1;
     }
 
-    // we define the viewport dimensions
-    int width, height;
     glfwGetFramebufferSize(window, &width, &height);
 
-    // we enable Z test
     glEnable(GL_DEPTH_TEST);
 
-    //the "clear" color for the frame buffer
     glClearColor(0.26f, 0.46f, 0.98f, 1.0f);
 
-    // we create the Shader Program for the creation of the shadow map
-    
-    Shader shadow_shader(SHADERS_DIR_PATH"/shadowmap.vert", SHADERS_DIR_PATH"/shadowmap.frag");
-    // we create the Shader Program used for objects (which presents different subroutines we can switch)
-    Shader illumination_shader(SHADERS_DIR_PATH"/ggx_tex_shadow.vert", SHADERS_DIR_PATH"/ggx_tex_shadow.frag");
+    // AXIS CREATION
+    const glm::vec4 xColorVec = glm::vec4(1.0f, 0.0f, 0.0f, 0.7f);
+    const vector<glm::vec3> xPointsPositions{
+        glm::vec3(-1000.0f, 0.0f, 0.0f),
+        glm::vec3(1000.0f, 0.0f, 0.0f),
+        glm::vec3(1000.0f, 50.0f, 0.0f),
+        glm::vec3(1000.0f, -50.0f, 0.0f),
+        glm::vec3(1050.0f, 0.0f, 0.0f)};
+    ArrowLine xAxis = CreateArrowLine(xPointsPositions, xColorVec);
 
-    // we parse the Shader Program to search for the number and names of the subroutines.
-    // the names are placed in the shaders vector
+    const glm::vec4 yColorVec = glm::vec4(0.0f, 1.0f, 0.0f, 0.7f);
+    const vector<glm::vec3> yPointsPositions{
+        glm::vec3(0.0f, -1000.0f, 0.0f),
+        glm::vec3(0.0f, 1000.0f, 0.0f),
+        glm::vec3(50.0f, 1000.0f, 0.0f),
+        glm::vec3(-50.0f, 1000.0f, 0.0f),
+        glm::vec3(0.0f, 1050.0f, 0.0f)};
+    ArrowLine yAxis = CreateArrowLine(xPointsPositions, xColorVec);
+
+    const glm::vec4 zColorVec = glm::vec4(1.0f, 0.0f, 0.0f, 0.7f);
+    const vector<glm::vec3> zPointsPositions{
+        glm::vec3(0.0f, 0.0f, -1000.0f),
+        glm::vec3(0.0f, 0.0f, 1000.0f),
+        glm::vec3(0.0f, 50.0f, 1000.0f),
+        glm::vec3(0.0f, -50.0f, 1000.0f),
+        glm::vec3(0.0f, 0.0f, 1050.0f)};
+    ArrowLine zAxis = CreateArrowLine(zPointsPositions, zColorVec);
+
+    // SHADERS
+    Shader shadow_shader(SHADERS_DIR_PATH "/shadowmap.vert", SHADERS_DIR_PATH "/shadowmap.frag", SHADERS_DIR_PATH "/shadowmap.geom");
+    Shader illumination_shader(SHADERS_DIR_PATH "/object_partmedia.vert", SHADERS_DIR_PATH "/object_partmedia.frag");
+    Shader flat_shader(SHADERS_DIR_PATH "/flat.vert", SHADERS_DIR_PATH "/flat.frag");
+    Shader skybox_partmedia_shader(SHADERS_DIR_PATH "/skybox_partmedia.vert", SHADERS_DIR_PATH "/skybox_partmedia.frag");
+    Shader skybox_fog_shader(SHADERS_DIR_PATH "/skybox_fog.vert", SHADERS_DIR_PATH "/skybox_fog.frag");
+
     SetupShader(illumination_shader.Program);
-    // we print on console the name of the first subroutine used
     PrintCurrentShader(current_subroutine);
 
-    // we load the images and store them in a vector
-    textureID.push_back(LoadTexture(TEXTURES_DIR_PATH"/UV_Grid_Sm.png"));
-    textureID.push_back(LoadTexture(TEXTURES_DIR_PATH"/SoilCracked.png"));
+    // TEXTURES
+    cubeMap = new CubeMap(TEXTURES_DIR_PATH "/cube/Maskonaive2/");
+    cubeMap->Load();
 
-    // we load the model(s) (code of Model class is in include/utils/model.h)
-    Model cubeModel(MODELS_DIR_PATH"/cube.obj");
-    Model sphereModel(MODELS_DIR_PATH"/sphere.obj");
-    Model bunnyModel(MODELS_DIR_PATH"/bunny_lp.obj");
-    Model planeModel(MODELS_DIR_PATH"/plane.obj");
+    debugTex = new Texture2D(TEXTURES_DIR_PATH "/UV_Grid_Sm.png", Texture2DType::DIFFUSE);
+    debugTex->Load();
 
-    /////////////////// CREATION OF BUFFER FOR THE  DEPTH MAP /////////////////////////////////////////
-    // buffer dimension: too large -> performance may slow down if we have many lights; too small -> strong aliasing
-    const GLuint SHADOW_WIDTH = 1024, SHADOW_HEIGHT = 1024;
-    GLuint depthMapFBO;
-    // we create a Frame Buffer Object: the first rendering step will render to this buffer, and not to the real frame buffer
+    // MODELS
+    Model planeModel = Model(MODELS_DIR_PATH "/plane.obj");
+    Model cubeModel(MODELS_DIR_PATH "/cube.obj"); // used for the environment map
+    Model sphereModel(MODELS_DIR_PATH "/sphere.obj");
+
+    // SCENE SETUP
+    CreateSceneObjects(planeModel, sphereModel, cubeModel);
+
+    // DEPTH MAP CONFIGURATION
+    unsigned int depthMapFBO;
     glGenFramebuffers(1, &depthMapFBO);
-    // we create a texture for the depth map
-    GLuint depthMap;
-    glGenTextures(1, &depthMap);
-    glBindTexture(GL_TEXTURE_2D, depthMap);
-    // in the texture, we will save only the depth data of the fragments. Thus, we specify that we need to render only depth in the first rendering step
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, SHADOW_WIDTH, SHADOW_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    // we set to clamp the uv coordinates outside [0,1] to the color of the border
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-
-    // outside the area covered by the light frustum, everything is rendered in shadow (because we set GL_CLAMP_TO_BORDER)
-    // thus, we set the texture border to white, so to render correctly everything not involved by the shadow map
-    //*************
-    GLfloat borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-
-    // we bind the depth map FBO
+    unsigned int depthCubemap;
+    glGenTextures(1, &depthCubemap);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT, SHADOW_WIDTH, SHADOW_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    // attach depth texture as FBO's depth buffer
     glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
-    // we set that we are not calculating nor saving color data
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depthCubemap, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    ///////////////////////////////////////////////////////////////////
-
 
     // Projection matrix of the camera: FOV angle, aspect ratio, near and far planes
-    glm::mat4 projection = glm::perspective(45.0f, (float)screenWidth/(float)screenHeight, 0.1f, 10000.0f);
+    projection = glm::perspective(glm::radians(45.0f), (float)screenWidth / (float)screenHeight, near, far);
+
+    // PARTICIPATING MEDIA
+    glm::vec3 absorptionCoeff = glm::vec3(0.05f, 0.05f, 0.05f);
+    glm::vec3 scatteringCoeff = glm::vec3(0.150f, 0.150f, 0.150f);
+    float gCoeff = 0.0f;
+
+    // ImGui SETUP
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO &io = ImGui::GetIO();
+    (void)io;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 410");
+
+    // Constant shaders' values setup
+    shadow_shader.Use();
+    glUniform1f(glGetUniformLocation(shadow_shader.Program, "far_plane"), far);
+
+    illumination_shader.Use();
+    glUniformMatrix4fv(glGetUniformLocation(illumination_shader.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniform1f(glGetUniformLocation(illumination_shader.Program, "Kd"), Kd);
+    glUniform1f(glGetUniformLocation(illumination_shader.Program, "alpha"), alpha);
+    glUniform1f(glGetUniformLocation(illumination_shader.Program, "F0"), F0);
+    glUniform1f(glGetUniformLocation(illumination_shader.Program, "far_plane"), far);
+    glUniform1f(glGetUniformLocation(illumination_shader.Program, "repeat"), repeat);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, debugTex->GetTextureId());
+    glUniform1i(glGetUniformLocation(illumination_shader.Program, "tex"), 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
+    glUniform1i(glGetUniformLocation(illumination_shader.Program, "depthMap"), 2);
+
+    illuminationShaderSubroutines = {
+        glGetSubroutineIndex(illumination_shader.Program, GL_FRAGMENT_SHADER, "miePhaseFunc"), 
+        glGetSubroutineIndex(illumination_shader.Program, GL_FRAGMENT_SHADER, "rayleighPhaseFunc"),
+        glGetSubroutineIndex(illumination_shader.Program, GL_FRAGMENT_SHADER, "schlickPhaseFunc"),
+        glGetSubroutineIndex(illumination_shader.Program, GL_FRAGMENT_SHADER, "uniformPhaseFunc")
+    };
+
+    skybox_partmedia_shader.Use();
+    glUniform1f(glGetUniformLocation(skybox_partmedia_shader.Program, "far_plane_vert"), far);
+    glUniformMatrix4fv(glGetUniformLocation(skybox_partmedia_shader.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cubeMap->GetId());
+    glUniform1i(glGetUniformLocation(skybox_partmedia_shader.Program, "skyboxTex"), 3);
+    glUniform1f(glGetUniformLocation(skybox_partmedia_shader.Program, "far_plane"), far);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, depthCubemap);
+    glUniform1i(glGetUniformLocation(skybox_partmedia_shader.Program, "depthMap"), 2);
+
+    skyboxShaderSubroutines = {
+        glGetSubroutineIndex(skybox_partmedia_shader.Program, GL_FRAGMENT_SHADER, "miePhaseFunc"), 
+        glGetSubroutineIndex(skybox_partmedia_shader.Program, GL_FRAGMENT_SHADER, "rayleighPhaseFunc"),
+        glGetSubroutineIndex(skybox_partmedia_shader.Program, GL_FRAGMENT_SHADER, "schlickPhaseFunc"),
+        glGetSubroutineIndex(skybox_partmedia_shader.Program, GL_FRAGMENT_SHADER, "uniformPhaseFunc")
+    };
+
+    skybox_fog_shader.Use();
+    glUniformMatrix4fv(glGetUniformLocation(skybox_fog_shader.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+    float fogDensity = 2.0f;
+    glUniform1f(glGetUniformLocation(skybox_fog_shader.Program, "fogDensity"), fogDensity);
+    glm::vec3 fogColor = glm::vec3(0.5f, 0.5f, 0.5f);
+    glUniform3fv(glGetUniformLocation(skybox_fog_shader.Program, "fogColor"), 1, glm::value_ptr(fogColor));
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cubeMap->GetId());
+    glUniform1i(glGetUniformLocation(skybox_fog_shader.Program, "tCube"), 3);
+
+
+    flat_shader.Use();
+    glUniformMatrix4fv(glGetUniformLocation(flat_shader.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
+    glUniformMatrix4fv(glGetUniformLocation(flat_shader.Program, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(glm::mat4(1.0)));
 
     // Rendering loop: this code is executed at each frame
-    while(!glfwWindowShouldClose(window))
+    while (!glfwWindowShouldClose(window))
     {
         // we determine the time passed from the beginning
         // and we calculate time difference between current frame rendering and the previous one
@@ -295,85 +347,77 @@ int main()
 
         // Check is an I/O event is happening
         glfwPollEvents();
-        // we apply FPS camera movements
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
         apply_camera_movements();
 
-        /////////////////// STEP 1 - SHADOW MAP: RENDERING OF SCENE FROM LIGHT POINT OF VIEW ////////////////////////////////////////////////
-        // we set view and projection matrix for the rendering using light as a camera
-        glm::mat4 lightProjection, lightView;
-        glm::mat4 lightSpaceMatrix;
-        GLfloat near_plane = -10.0f, far_plane = 10.0f;
-        GLfloat frustumSize = 5.0f;
-        // for a directional light, the projection is orthographic. For point lights, we should use a perspective projection
-        lightProjection = glm::ortho(-frustumSize, frustumSize, -frustumSize, frustumSize, near_plane, far_plane);
-        // the light is directional, so technically it has no position. We need a view matrix, so we consider a position on the the direction vector of the light
-        lightView = glm::lookAt(lightDir0, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        // transformation matrix for the light
-        lightSpaceMatrix = lightProjection * lightView;
-        /// We "install" the  Shader Program for the shadow mapping creation
-        shadow_shader.Use();
-        // we pass the transformation matrix as uniform
-        glUniformMatrix4fv(glGetUniformLocation(shadow_shader.Program, "lightSpaceMatrix"), 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));
-        // we set the viewport for the first rendering step = dimensions of the depth texture
-        glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
-        // we activate the FBO for the depth map rendering
-        glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-        glClear(GL_DEPTH_BUFFER_BIT);
+        PerformShadowMapping(shadow_shader, depthMapFBO);
 
-        // we render the scene, using the shadow shader
-        RenderObjects(shadow_shader, planeModel, cubeModel, sphereModel, bunnyModel, SHADOWMAP, depthMap);
-
-        /////////////////// STEP 2 - SCENE RENDERING FROM CAMERA ////////////////////////////////////////////////
-
-        // we get the view matrix from the Camera class
         view = camera.GetViewMatrix();
 
-        // we activate back the standard Frame Buffer
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        PerformIlluminationPass(illumination_shader, absorptionCoeff, scatteringCoeff, gCoeff);
 
-        // we "clear" the frame and z buffer
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (skyboxTechnique == 0) {
+            PerformSkyBoxPass(skybox_fog_shader, cubeModel);
+        } else  {
+            PerformSkyboxPass(skybox_partmedia_shader, cubeModel, absorptionCoeff, scatteringCoeff, gCoeff);
+        }
 
-        // we set the rendering mode
-        if (wireframe)
-            // Draw in wireframe
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        else
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        RenderAxis(flat_shader, xAxis, yAxis, zAxis);
 
-        // if animated rotation is activated, than we increment the rotation angle using delta time and the rotation speed parameter
-        if (spinning)
-            orientationY+=(deltaTime*spin_speed);
+        // GUI RENDERING
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, {650.f,460.f });
+        ImGui::Begin("Tools", &menuIsActive, ImGuiWindowFlags_MenuBar);
+        ImGui::PopStyleVar();
+        ImGui::BeginChild("Participating media rendering", ImVec2(600, 270), true);
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Participating media coefficients:");
+        ImGui::Indent();
+        ImGui::SliderFloat("absorptionCoefficient_R", &absorptionCoeff.x, 0.0f, 1.0f);
+        ImGui::SliderFloat("absorptionCoefficient_G", &absorptionCoeff.y, 0.0f, 1.0f);
+        ImGui::SliderFloat("absorptionCoefficient_B", &absorptionCoeff.z, 0.0f, 1.0f);
+        ImGui::Separator();
 
-        // we set the viewport for the final rendering step
-        glViewport(0, 0, width, height);
+        ImGui::SliderFloat("scatteringCoefficient_R", &scatteringCoeff.x, 0.0f, 1.0f);
+        ImGui::SliderFloat("scatteringCoefficient_G", &scatteringCoeff.y, 0.0f, 1.0f);
+        ImGui::SliderFloat("scatteringCoefficient_B", &scatteringCoeff.z, 0.0f, 1.0f);
+        ImGui::Separator();
 
-        // We "install" the selected Shader Program as part of the current rendering process. We pass to the shader the light transformation matrix, and the depth map rendered in the first rendering step
-        illumination_shader.Use();
-         // we search inside the Shader Program the name of the subroutine currently selected, and we get the numerical index
-        GLuint index = glGetSubroutineIndex(illumination_shader.Program, GL_FRAGMENT_SHADER, shaders[current_subroutine].c_str());
-        // we activate the subroutine using the index (this is where shaders swapping happens)
-        glUniformSubroutinesuiv( GL_FRAGMENT_SHADER, 1, &index);
+        ImGui::SliderFloat("g coefficient", &gCoeff, -1.0f, 1.0f);
+        ImGui::Separator();
 
-        // we pass projection and view matrices to the Shader Program
-        glUniformMatrix4fv(glGetUniformLocation(illumination_shader.Program, "projectionMatrix"), 1, GL_FALSE, glm::value_ptr(projection));
-        glUniformMatrix4fv(glGetUniformLocation(illumination_shader.Program, "viewMatrix"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(illumination_shader.Program, "lightSpaceMatrix"), 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));
+        ImGui::Text("Phase function:");
+        ImGui::RadioButton("Mie", &phaseFunction, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Rayleigh", &phaseFunction, 1);
+        ImGui::RadioButton("Schlick", &phaseFunction, 2);
+        ImGui::SameLine();
+        ImGui::RadioButton("Uniform", &phaseFunction, 3);
+        ImGui::EndChild();
 
-        // we determine the position in the Shader Program of the uniform variables
-        GLint lightDirLocation = glGetUniformLocation(illumination_shader.Program, "lightVector");
-        GLint kdLocation = glGetUniformLocation(illumination_shader.Program, "Kd");
-        GLint alphaLocation = glGetUniformLocation(illumination_shader.Program, "alpha");
-        GLint f0Location = glGetUniformLocation(illumination_shader.Program, "F0");
+        ImGui::BeginChild("Point light", ImVec2(600, 100), true);
+        ImGui::TextColored(ImVec4(1.0, 1.0, 0.0, 1.0), "Point light");
+        ImGui::Indent();
+        ImGui::SliderFloat("light x", &lightPos[0], -100.0f, 100.0f);
+        ImGui::SliderFloat("light y", &lightPos[1], -100.0f, 100.0f);
+        ImGui::SliderFloat("light z", &lightPos[2], -100.0f, 100.0f);
 
-        // we assign the value to the uniform variables
-        glUniform3fv(lightDirLocation, 1, glm::value_ptr(lightDir0));
-        glUniform1f(kdLocation, Kd);
-        glUniform1f(alphaLocation, alpha);
-        glUniform1f(f0Location, F0);
+        ImGui::EndChild();
 
-        // we render the scene
-        RenderObjects(illumination_shader, planeModel, cubeModel, sphereModel, bunnyModel, RENDER, depthMap);
+        ImGui::BeginChild("Skybox options", ImVec2(600, 80), true);
+        ImGui::TextColored(ImVec4(0.0, 1.0, 1.0, 1.0), "Skybox rendering technique");
+        ImGui::Indent();
+        ImGui::RadioButton("Volumetric Fog Skybox", &skyboxTechnique, 0);
+        ImGui::RadioButton("Participating Media Skybox", &skyboxTechnique, 1);
+        ImGui::EndChild();
+
+        ImGui::End();
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
 
         // Swapping back and front buffers
         glfwSwapBuffers(window);
@@ -383,139 +427,192 @@ int main()
     // we delete the Shader Programs
     illumination_shader.Delete();
     shadow_shader.Delete();
-    // chiudo e cancello il contesto creato
+    skybox_partmedia_shader.Delete();
+    flat_shader.Delete();
+    delete cubeMap;
+    delete debugTex;
+
     glfwTerminate();
     return 0;
 }
 
-
-//////////////////////////////////////////
-// we render the objects. We pass also the current rendering step, and the depth map generated in the first step, which is used by the shaders of the second step
-void RenderObjects(Shader &shader, Model &planeModel, Model &cubeModel, Model &sphereModel, Model &bunnyModel, GLint render_pass, GLuint depthMap)
-{
-    // For the second rendering step -> we pass the shadow map to the shaders
-    if (render_pass==RENDER)
+ArrowLine CreateArrowLine(const vector<glm::vec3>& pointsPos, const glm::vec4& color) {
+    vector<Point> points;
+    for (auto &pos : pointsPos)
     {
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, depthMap);
-        GLint shadowLocation = glGetUniformLocation(shader.Program, "shadowMap");
-        glUniform1i(shadowLocation, 2);
+        Point temp;
+        temp.Position = pos;
+        temp.Color = color;
+        points.push_back(temp);
     }
-    // we pass the needed uniforms
-    GLint textureLocation = glGetUniformLocation(shader.Program, "tex");
-    GLint repeatLocation = glGetUniformLocation(shader.Program, "repeat");
 
-    // PLANE
-    // we activate the texture of the plane
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, textureID[1]);
-    glUniform1i(textureLocation, 1);
-    glUniform1f(repeatLocation, 80.0);
+    return ArrowLine(points, 2);
+}
 
-    /*
-      we create the transformation matrix
+void CreateSceneObjects(Model& planeModel, Model& sphereModel, Model& cubeModel) {
+    auto floor = std::make_unique<Object>("Floor");
+    floor->SetModel(&planeModel);
+    Transform &floorTransform = floor->GetTransform();
+    floorTransform.Scale(glm::vec3(2.0f));
+    objects.push_back(std::move(floor));
 
-      N.B.) the last defined is the first applied
+    auto negZWall = std::make_unique<Object>("NegZWall");
+    negZWall->SetModel(&planeModel);
+    Transform &negZWallTransform = negZWall->GetTransform();
+    negZWallTransform.SetPosition(glm::vec3(0.0f, 0.0f, -15.0f));
+    negZWallTransform.Rotate(glm::vec3(1.0f, 0.0f, 0.0f), glm::radians(-90.0f));
+    negZWallTransform.Scale(glm::vec3(2.0f));
+    objects.push_back(std::move(negZWall));
 
-      We need also the matrix for normals transformation, which is the inverse of the transpose of the 3x3 submatrix (upper left) of the modelview. We do not consider the 4th column because we do not need translations for normals.
-      An explanation (where XT means the transpose of X, etc):
-        "Two column vectors X and Y are perpendicular if and only if XT.Y=0. If We're going to transform X by a matrix M, we need to transform Y by some matrix N so that (M.X)T.(N.Y)=0. Using the identity (A.B)T=BT.AT, this becomes (XT.MT).(N.Y)=0 => XT.(MT.N).Y=0. If MT.N is the identity matrix then this reduces to XT.Y=0. And MT.N is the identity matrix if and only if N=(MT)-1, i.e. N is the inverse of the transpose of M.
-    */
-    // we reset to identity at each frame
-    planeModelMatrix = glm::mat4(1.0f);
-    planeNormalMatrix = glm::mat3(1.0f);
-    planeModelMatrix = glm::translate(planeModelMatrix, glm::vec3(0.0f, -1.0f, 0.0f));
-    planeModelMatrix = glm::scale(planeModelMatrix, glm::vec3(10.0f, 1.0f, 10.0f));
-    planeNormalMatrix = glm::inverseTranspose(glm::mat3(view*planeModelMatrix));
-    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(planeModelMatrix));
-    glUniformMatrix3fv(glGetUniformLocation(shader.Program, "normalMatrix"), 1, GL_FALSE, glm::value_ptr(planeNormalMatrix));
-    // we render the plane
-    planeModel.Draw();
+    auto posXWall = std::make_unique<Object>("PosXWall");
+    posXWall->SetModel(&planeModel);
+    Transform &posXWallTransform = posXWall->GetTransform();
+    posXWallTransform.SetPosition(glm::vec3(15.0f, 0.0f, 0.0f));
+    posXWallTransform.Rotate(glm::vec3(0.0f, 0.0f, 1.0f), glm::radians(90.0f));
+    posXWallTransform.Scale(glm::vec3(2.0f));
+    objects.push_back(std::move(posXWall));
 
-    // SPHERE
-    // we activate the texture of the object
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, textureID[0]);
-    glUniform1i(textureLocation, 0);
-    glUniform1f(repeatLocation, repeat);
+    auto cube1Obj = std::make_unique<Object>("Cube 1");
+    cube1Obj->SetModel(&cubeModel);
+    Transform &cube1Transform = cube1Obj->GetTransform();
+    cube1Transform.SetPosition(glm::vec3(0.0f, 4.0f, -3.5f));
+    cube1Transform.Scale(glm::vec3(0.5f));
+    objects.push_back(std::move(cube1Obj));
 
-    // we reset to identity at each frame
-    sphereModelMatrix = glm::mat4(1.0f);
-    sphereNormalMatrix = glm::mat3(1.0f);
-    sphereModelMatrix = glm::translate(sphereModelMatrix, glm::vec3(-3.0f, 1.0f, 0.0f));
-    sphereModelMatrix = glm::rotate(sphereModelMatrix, glm::radians(orientationY), glm::vec3(0.0f, 1.0f, 0.0f));
-    sphereModelMatrix = glm::scale(sphereModelMatrix, glm::vec3(0.8f, 0.8f, 0.8f));
-    sphereNormalMatrix = glm::inverseTranspose(glm::mat3(view*sphereModelMatrix));
-    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(sphereModelMatrix));
-    glUniformMatrix3fv(glGetUniformLocation(shader.Program, "normalMatrix"), 1, GL_FALSE, glm::value_ptr(sphereNormalMatrix));
+    auto cube2Obj = std::make_unique<Object>("Cube 2");
+    cube2Obj->SetModel(&cubeModel);
+    Transform &cube2Transform = cube2Obj->GetTransform();
+    cube2Transform.SetPosition(glm::vec3(-5.0f, 4.0f, -1.5f));
+    cube2Transform.Scale(glm::vec3(0.2));
+    objects.push_back(std::move(cube2Obj));
 
-    // we render the sphere
-    sphereModel.Draw();
+    auto sphere1Obj = std::make_unique<Object>("Sphere 1");
+    sphere1Obj->SetModel(&sphereModel);
+    Transform &sphere1Transform = sphere1Obj->GetTransform();
+    sphere1Transform.SetPosition(glm::vec3(5.0f, 4.0f, -6.0f));
+    sphere1Transform.Scale(glm::vec3(0.5));
+    objects.push_back(std::move(sphere1Obj));
 
-    // CUBE
-    // we reset to identity at each frame
-    cubeModelMatrix = glm::mat4(1.0f);
-    cubeNormalMatrix = glm::mat3(1.0f);
-    cubeModelMatrix = glm::translate(cubeModelMatrix, glm::vec3(0.0f, 1.0f, 0.0f));
-    cubeModelMatrix = glm::rotate(cubeModelMatrix, glm::radians(orientationY), glm::vec3(0.0f, 1.0f, 0.0f));
-    cubeModelMatrix = glm::scale(cubeModelMatrix, glm::vec3(0.8f, 0.8f, 0.8f));
-    cubeNormalMatrix = glm::inverseTranspose(glm::mat3(view*cubeModelMatrix));
-    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(cubeModelMatrix));
-    glUniformMatrix3fv(glGetUniformLocation(shader.Program, "normalMatrix"), 1, GL_FALSE, glm::value_ptr(cubeNormalMatrix));
+}
+void PerformShadowMapping(Shader &shadowShader, GLuint depthMapFBO)
+{
+    glm::mat4 shadowTransforms[6] = {};
+    shadowTransforms[0] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+    shadowTransforms[1] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(-1.0, 0.0, 0.0), glm::vec3(0.0, -1.0, 0.0));
+    shadowTransforms[2] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0, 1.0, 0.0), glm::vec3(0.0, 0.0, 1.0));
+    shadowTransforms[3] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0, -1.0, 0.0), glm::vec3(0.0, 0.0, -1.0));
+    shadowTransforms[4] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0, 0.0, 1.0), glm::vec3(0.0, -1.0, 0.0));
+    shadowTransforms[5] = shadowProj * glm::lookAt(lightPos, lightPos + glm::vec3(0.0, 0.0, -1.0), glm::vec3(0.0, -1.0, 0.0));
 
-    // we render the cube
-    cubeModel.Draw();
+    shadowShader.Use();
 
-    // BUNNY
-    // we reset to identity at each frame
-    bunnyModelMatrix = glm::mat4(1.0f);
-    bunnyNormalMatrix = glm::mat3(1.0f);
-    bunnyModelMatrix = glm::translate(bunnyModelMatrix, glm::vec3(3.0f, 1.0f, 0.0f));
-    bunnyModelMatrix = glm::rotate(bunnyModelMatrix, glm::radians(orientationY), glm::vec3(0.0f, 1.0f, 0.0f));
-    bunnyModelMatrix = glm::scale(bunnyModelMatrix, glm::vec3(0.3f, 0.3f, 0.3f));
-    bunnyNormalMatrix = glm::inverseTranspose(glm::mat3(view*bunnyModelMatrix));
-    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(bunnyModelMatrix));
-    glUniformMatrix3fv(glGetUniformLocation(shader.Program, "normalMatrix"), 1, GL_FALSE, glm::value_ptr(bunnyNormalMatrix));
+    glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
+    // we activate the FBO for the depth map rendering
+    glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
+    glClear(GL_DEPTH_BUFFER_BIT);
 
-    // we render the bunny
-    bunnyModel.Draw();
+    for (unsigned int i = 0; i < 6; ++i)
+    {
+        string name = "shadowMatrices[" + std::to_string(i) + "]";
+        glUniformMatrix4fv(glGetUniformLocation(shadowShader.Program, name.c_str()), 1, GL_FALSE, glm::value_ptr(shadowTransforms[i]));
+    }
+    glUniform3fv(glGetUniformLocation(shadowShader.Program, "lightPos"), 1, glm::value_ptr(lightPos));
 
+    RenderObjects(shadowShader);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void PerformIlluminationPass(Shader &shader, glm::vec3 &absorptionCoeff, glm::vec3 &scatteringCoeff, float gCoeff)
+{
+
+    // we "clear" the frame and z buffer
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // we set the viewport for the final rendering step
+    glViewport(0, 0, width, height);
+
+    // illumination pass
+    shader.Use();
+
+    const GLuint selectedPhaseFunc = (GLuint) phaseFunction;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 1, &selectedPhaseFunc);
+
+    // VERTEX SHADER'S UNIFORMS
+    // model matrix is set by object.cpp when render call is fired
+    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "viewMatrix"), 1, GL_FALSE, glm::value_ptr(view));
+
+    // FRAGMENT SHADER'S UNIFORMS
+    glUniform3fv(glGetUniformLocation(shader.Program, "wLightPos"), 1, glm::value_ptr(lightPos));
+    glUniform3fv(glGetUniformLocation(shader.Program, "wCameraPos"), 1, glm::value_ptr(camera.Position));
+
+    // Participating media
+    glUniform3fv(glGetUniformLocation(shader.Program, "absorptionCoeff"), 1, glm::value_ptr(absorptionCoeff));
+    glUniform3fv(glGetUniformLocation(shader.Program, "scatteringCoeff"), 1, glm::value_ptr(scatteringCoeff));
+    glUniform1f(glGetUniformLocation(shader.Program, "g"), gCoeff);
+
+    RenderObjects(shader);
+}
+
+void PerformSkyBoxPass(Shader& shader, Model &skyboxCube) {
+    shader.Use();
+    glDepthFunc(GL_LEQUAL);
+
+    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "viewMatrix"), 1, GL_FALSE, glm::value_ptr(glm::mat4(glm::mat3(view))));
+
+    skyboxCube.Draw();
+
+    glDepthFunc(GL_LESS);
+}
+
+void PerformSkyboxPass(Shader &shader, Model &skyboxCube, glm::vec3 &absorptionCoeff, glm::vec3 &scatteringCoeff, float gCoeff)
+{
+    // skybox
+    shader.Use();
+    const GLuint selectedPhaseFunc = (GLuint) phaseFunction;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 1, &selectedPhaseFunc);
+    glDepthFunc(GL_LEQUAL);
+
+    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "viewMatrix"), 1, GL_FALSE, glm::value_ptr(glm::mat4(glm::mat3(view))));
+    glm::mat4 inverseViewProjection = glm::inverse((projection * glm::mat4(glm::mat3(view))));
+    glUniformMatrix4fv(glGetUniformLocation(shader.Program, "inverseViewProjMatrix"), 1, GL_FALSE, glm::value_ptr(inverseViewProjection));
+    glUniform1f(glGetUniformLocation(shader.Program, "width"), width);
+    glUniform1f(glGetUniformLocation(shader.Program, "height"), height);
+
+
+    // FOR PARTMEDIA SKYBOX
+    glUniform3fv(glGetUniformLocation(shader.Program, "wLightPos"), 1, glm::value_ptr(lightPos));
+    glUniform3fv(glGetUniformLocation(shader.Program, "wCameraPos"), 1, glm::value_ptr(camera.Position));
+
+    // Participating media
+    glUniform3fv(glGetUniformLocation(shader.Program, "absorptionCoeff"), 1, glm::value_ptr(absorptionCoeff));
+    glUniform3fv(glGetUniformLocation(shader.Program, "scatteringCoeff"), 1, glm::value_ptr(scatteringCoeff));
+    glUniform1f(glGetUniformLocation(shader.Program, "g"), gCoeff);
+
+    skyboxCube.Draw();
+
+    glDepthFunc(GL_LESS);
+}
+
+void RenderAxis(Shader& shader, ArrowLine& xAxis, ArrowLine& yAxis, ArrowLine& zAxis) {
+    // AXIS RENDERING
+        shader.Use();
+        glUniformMatrix4fv(glGetUniformLocation(shader.Program, "viewMatrix"), 1, GL_FALSE, glm::value_ptr(view));
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        xAxis.Draw();
+        yAxis.Draw();
+        zAxis.Draw();
 }
 
 //////////////////////////////////////////
-// we load the image from disk and we create an OpenGL texture
-GLint LoadTexture(const char* path)
+// we render the objects. We pass also the current rendering step, and the depth map generated in the first step, which is used by the shaders of the second step
+void RenderObjects(Shader &shader)
 {
-    GLuint textureImage;
-    int w, h, channels;
-    unsigned char* image;
-    image = stbi_load(path, &w, &h, &channels, STBI_rgb);
-
-    if (image == nullptr)
-        std::cout << "Failed to load texture!" << std::endl;
-
-    glGenTextures(1, &textureImage);
-    glBindTexture(GL_TEXTURE_2D, textureImage);
-    // 3 channels = RGB ; 4 channel = RGBA
-    if (channels==3)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-    else if (channels==4)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    // we set how to consider UVs outside [0,1] range
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    // we set the filtering for minification and magnification
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST_MIPMAP_NEAREST);
-
-    // we free the memory once we have created an OpenGL texture
-    stbi_image_free(image);
-
-    // we set the binding to 0 once we have finished
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    return textureImage;
+    for (size_t i = 0; i < objects.size(); i++)
+    {
+        objects[i]->Render(shader, view);
+    }
 }
 
 ///////////////////////////////////////////
@@ -524,7 +621,7 @@ GLint LoadTexture(const char* path)
 // the subroutines to the shaders vector, which is used for the shaders swapping
 void SetupShader(int program)
 {
-    int maxSub,maxSubU,countActiveSU;
+    int maxSub, maxSubU, countActiveSU;
     GLchar name[256];
     int len, numCompS;
 
@@ -538,7 +635,8 @@ void SetupShader(int program)
     glGetProgramStageiv(program, GL_FRAGMENT_SHADER, GL_ACTIVE_SUBROUTINE_UNIFORMS, &countActiveSU);
 
     // print info for every Subroutine uniform
-    for (int i = 0; i < countActiveSU; i++) {
+    for (int i = 0; i < countActiveSU; i++)
+    {
 
         // get the name of the Subroutine uniform (in this example, we have only one)
         glGetActiveSubroutineUniformName(program, GL_FRAGMENT_SHADER, i, 256, &len, name);
@@ -549,12 +647,13 @@ void SetupShader(int program)
         glGetActiveSubroutineUniformiv(program, GL_FRAGMENT_SHADER, i, GL_NUM_COMPATIBLE_SUBROUTINES, &numCompS);
 
         // get the indices of the active subroutines info and write into the array s
-        int *s =  new int[numCompS];
+        int *s = new int[numCompS];
         glGetActiveSubroutineUniformiv(program, GL_FRAGMENT_SHADER, i, GL_COMPATIBLE_SUBROUTINES, s);
         std::cout << "Compatible Subroutines:" << std::endl;
 
         // for each index, get the name of the subroutines, print info, and save the name in the shaders vector
-        for (int j=0; j < numCompS; ++j) {
+        for (int j = 0; j < numCompS; ++j)
+        {
             glGetActiveSubroutineName(program, GL_FRAGMENT_SHADER, s[j], 256, &len, name);
             std::cout << "\t" << s[j] << " - " << name << "\n";
             shaders.push_back(name);
@@ -569,94 +668,96 @@ void SetupShader(int program)
 // we print on console the name of the currently used shader subroutine
 void PrintCurrentShader(int subroutine)
 {
-    std::cout << "Current shader subroutine: " << shaders[subroutine]  << std::endl;
+    std::cout << "Current shader subroutine: " << shaders[subroutine] << std::endl;
 }
 
 //////////////////////////////////////////
 // If one of the WASD keys is pressed, the camera is moved accordingly (the code is in utils/camera.h)
 void apply_camera_movements()
 {
-    if(keys[GLFW_KEY_W])
+    if (keys[GLFW_KEY_W])
         camera.ProcessKeyboard(FORWARD, deltaTime);
-    if(keys[GLFW_KEY_S])
+    if (keys[GLFW_KEY_S])
         camera.ProcessKeyboard(BACKWARD, deltaTime);
-    if(keys[GLFW_KEY_A])
+    if (keys[GLFW_KEY_A])
         camera.ProcessKeyboard(LEFT, deltaTime);
-    if(keys[GLFW_KEY_D])
+    if (keys[GLFW_KEY_D])
         camera.ProcessKeyboard(RIGHT, deltaTime);
 }
 
 //////////////////////////////////////////
 // callback for keyboard events
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mode)
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode)
 {
     GLuint new_subroutine;
 
     // if ESC is pressed, we close the application
-    if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(window, GL_TRUE);
-
-    // if P is pressed, we start/stop the animated rotation of models
-    if(key == GLFW_KEY_P && action == GLFW_PRESS)
-        spinning=!spinning;
-
-    // if L is pressed, we activate/deactivate wireframe rendering of models
-    if(key == GLFW_KEY_L && action == GLFW_PRESS)
-        wireframe=!wireframe;
 
     // pressing a key number, we change the shader applied to the models
     // if the key is between 1 and 9, we proceed and check if the pressed key corresponds to
     // a valid subroutine
-    if((key >= GLFW_KEY_1 && key <= GLFW_KEY_9) && action == GLFW_PRESS)
+    if ((key >= GLFW_KEY_1 && key <= GLFW_KEY_9) && action == GLFW_PRESS)
     {
         // "1" to "9" -> ASCII codes from 49 to 59
         // we subtract 48 (= ASCII CODE of "0") to have integers from 1 to 9
         // we subtract 1 to have indices from 0 to 8
-        new_subroutine = (key-'0'-1);
+        new_subroutine = (key - '0' - 1);
         // if the new index is valid ( = there is a subroutine with that index in the shaders vector),
         // we change the value of the current_subroutine variable
         // NB: we can just check if the new index is in the range between 0 and the size of the shaders vector,
         // avoiding to use the std::find function on the vector
-        if (new_subroutine<shaders.size())
+        if (new_subroutine < shaders.size())
         {
             current_subroutine = new_subroutine;
             PrintCurrentShader(current_subroutine);
         }
     }
 
+    if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
+    {
+        detachMouseFromCamera = !detachMouseFromCamera;
+
+        glfwSetInputMode(window, GLFW_CURSOR, detachMouseFromCamera ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+    }
+
     // we keep trace of the pressed keys
     // with this method, we can manage 2 keys pressed at the same time:
     // many I/O managers often consider only 1 key pressed at the time (the first pressed, until it is released)
     // using a boolean array, we can then check and manage all the keys pressed at the same time
-    if(action == GLFW_PRESS)
+    if (action == GLFW_PRESS)
         keys[key] = true;
-    else if(action == GLFW_RELEASE)
+    else if (action == GLFW_RELEASE)
         keys[key] = false;
 }
 
 //////////////////////////////////////////
 // callback for mouse events
-void mouse_callback(GLFWwindow* window, double xpos, double ypos)
+void mouse_callback(GLFWwindow *window, double xpos, double ypos)
 {
-      // we move the camera view following the mouse cursor
-      // we calculate the offset of the mouse cursor from the position in the last frame
-      // when rendering the first frame, we do not have a "previous state" for the mouse, so we set the previous state equal to the initial values (thus, the offset will be = 0)
-      if(firstMouse)
-      {
-          lastX = xpos;
-          lastY = ypos;
-          firstMouse = false;
-      }
+    // we move the camera view following the mouse cursor
+    // we calculate the offset of the mouse cursor from the position in the last frame
+    // when rendering the first frame, we do not have a "previous state" for the mouse, so we set the previous state equal to the initial values (thus, the offset will be = 0)
+    if (firstMouse)
+    {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
 
-      // offset of mouse cursor position
-      GLfloat xoffset = xpos - lastX;
-      GLfloat yoffset = lastY - ypos;
+    // offset of mouse cursor position
+    GLfloat xoffset = xpos - lastX;
+    GLfloat yoffset = lastY - ypos;
 
-      // the new position will be the previous one for the next frame
-      lastX = xpos;
-      lastY = ypos;
+    // the new position will be the previous one for the next frame
+    lastX = xpos;
+    lastY = ypos;
 
-      // we pass the offset to the Camera class instance in order to update the rendering
-      camera.ProcessMouseMovement(xoffset, yoffset);
+    // we pass the offset to the Camera class instance in order to update the rendering
+    if (!detachMouseFromCamera)
+    {
 
+        camera.ProcessMouseMovement(xoffset, yoffset);
+    }
 }

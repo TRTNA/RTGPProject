@@ -1,0 +1,5 @@
+include/glm/doc/api/*.html linguist-detectable=false
+include/glm/doc/api/search/*.javascript linguist-detectable=false
+include/glm/doc/api/search/*.css linguist-detectable=false
+include/glm/doc/api/*.css linguist-detectable=false
+include/glm/doc/theme/*.css linguist-detectable=false
